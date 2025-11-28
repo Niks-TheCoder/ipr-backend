@@ -74,6 +74,17 @@ app.use(cors({
 app.use(globalLimiter);
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
+// Temporary request logger to help debug incoming payloads (truncated body)
+app.use((req, res, next) => {
+  try {
+    const raw = req.body && typeof req.body === 'object' ? JSON.stringify(req.body) : String(req.body || '');
+    const truncated = raw.length > 300 ? raw.slice(0, 300) + '...' : raw;
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - Body: ${truncated}`);
+  } catch (err) {
+    console.log('Request logger error:', err);
+  }
+  next();
+});
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use('/uploads', express.static(path.resolve(baseUploadDir)));
 app.use('/uploads/consultations', express.static(consultationUploadDir));
@@ -91,20 +102,31 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/ip_secure
   });
 
 // Health check route
+const availableEndpoints = [
+  '/api/health',
+  '/api/send-otp',
+  '/api/send-admin-otp',
+  '/api/verify-admin-otp',
+  '/api/copyright',
+  '/api/contact',
+  '/api/patents',
+  '/api/consultations'
+];
+
 app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'API is running',
-    availableEndpoints: [
-      '/api/health',
-      '/api/send-otp',
-      '/api/send-admin-otp',
-      '/api/verify-admin-otp',
-      '/api/copyright',
-      '/api/contact',
-      '/api/patents',
-      '/api/consultations'
-    ]
+    availableEndpoints
+  });
+});
+
+// Additional health endpoint mounted under /api
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'API is running',
+    availableEndpoints
   });
 });
 
@@ -191,6 +213,8 @@ app.post('/api/send-otp', async (req, res) => {
 // API Routes
 app.use('/api/copyright', copyrightRoutes);
 app.use('/api', contactRoutes);
+// Note: `contactRoutes` defines routes like '/contact' and '/contacts'. Mounting under '/api' exposes
+// endpoints such as '/api/contact' and '/api/contacts' (this is intentional).
 app.use('/api/patents', patentRoutes);
 app.use('/api/consultations', consultationLimiter, consultationRoutes);
 app.use('/api/payment', paymentRoutes);
@@ -229,8 +253,11 @@ app.use((req, res) => {
 
 // Global error handler
 app.use((error, req, res, next) => {
-  console.error('Global error handler:', error);
-  res.status(500).json({ success: false, error: 'Internal server error' });
+  // Log full stack for debugging
+  console.error('Global error handler:', error && error.stack ? error.stack : error);
+  const status = error && error.status ? error.status : 500;
+  const message = error && error.message ? error.message : 'Internal server error';
+  res.status(status).json({ success: false, message });
 });
 
 // Graceful shutdown
